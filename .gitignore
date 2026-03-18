@@ -10,6 +10,8 @@ tv-backtest-api.db
 
 # Generated artifacts / results
 storage/results/
+storage/datasets/
+storage/strategies/
 
 # OS / editor
 .DS_Store
