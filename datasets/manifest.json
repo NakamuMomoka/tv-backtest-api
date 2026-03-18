@@ -1,0 +1,9 @@
+[
+  {
+    "key": "1_BITGET_BTCUSDT.P_60",
+    "name": "BITGET BTCUSDT.P 60 (Builtin)",
+    "symbol": "BTCUSDT.P",
+    "timeframe": "1h",
+    "file": "builtins/1_BITGET_BTCUSDT.P_60.csv"
+  }
+]

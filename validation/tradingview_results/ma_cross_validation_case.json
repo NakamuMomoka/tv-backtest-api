@@ -1,0 +1,21 @@
+{
+    "source": "TradingView",
+    "symbol": "UNKNOWN",
+    "timeframe": "UNKNOWN",
+    "strategy": "Validation MA Cross",
+    "params": {
+      "fast": 9,
+      "slow": 21
+    },
+    "period": {
+      "start": "2023-01-01",
+      "end": "2026-01-01"
+    },
+    "metrics": {
+      "net_profit": 27760.18,
+      "profit_factor": 1.17,
+      "win_rate": 0.3911,
+      "trades": 739,
+      "max_drawdown": -21280.64
+    }
+  }

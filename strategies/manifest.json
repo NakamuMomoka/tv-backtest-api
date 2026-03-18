@@ -1,0 +1,34 @@
+[
+  {
+    "key": "rjv_builtin_v1",
+    "name": "rjv (Builtin)",
+    "description": "価格COGと出来高COGの変化量が、それぞれ直近の変動幅（標準偏差）に対する閾値を超えたときに、価格COG変化の方向へエントリーし、反対方向のシグナルでドテンする戦略",
+    "file": "builtins/rjv.py",
+    "default_params": {
+      "COG_PERIOD": 28,
+      "COG_LENGTH": 21,
+      "COG_DEV": 1.3,
+      "VCOG_PERIOD": 13,
+      "VCOG_LENGTH": 6,
+      "VCOG_DEV": 0.8,
+      "DOTEN": true
+    }
+  },
+  {
+    "key": "assistpass_builtin_v1",
+    "name": "AssistPass (Builtin)",
+    "description": "Stoch RSI の %K/%D と Williams 系オシレーター、ATRによる低ボラ条件を組み合わせ、%K>%D のときは Williams が下限を上抜けたらロング、%K<%D のときは Williams が上限を下抜けたらショートでエントリーし、%K/%D の逆クロスまたは反対シグナルで決済する戦略",
+    "file": "builtins/assistpass.py",
+    "default_params": {
+      "lengthStoch": 28,
+      "lengthRSI": 12,
+      "smoothK": 20,
+      "smoothD": 10,
+      "WillyupLine": 80,
+      "WillylowLine": 20,
+      "length": 9,
+      "lenATR": 5,
+      "lenvoly": 45.0
+    }
+  }
+]

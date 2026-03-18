@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local database
+tv-backtest-api.db
+*.sqlite
+*.sqlite3
+
+# Generated artifacts / results
+storage/results/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
