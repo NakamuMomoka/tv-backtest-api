@@ -1,0 +1,90 @@
+name: Task
+description: AI/開発用の標準タスクテンプレート
+title: "[TASK] "
+labels: []
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+      description: 何をしたいかを簡潔に書く
+      placeholder: 例）手数料込みバックテスト結果の差分を是正したい
+    validations:
+      required: true
+
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景
+      description: なぜ必要か、何が困っているか
+      placeholder: 例）TradingViewとの差分が fee_rate=0.0006 で大きい
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_state
+    attributes:
+      label: 現状
+      description: 現在わかっていること、関連箇所、関連機能
+      placeholder: 例）strategy_fees.py はあるが、実データでのスモーク確認が未完了
+    validations:
+      required: false
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: 対象範囲
+      description: 修正対象と対象外を分けて書く
+      placeholder: |
+        修正対象:
+        - backend/app/...
+        対象外:
+        - UIデザイン変更
+    validations:
+      required: true
+
+  - type: textarea
+    id: requirements
+    attributes:
+      label: 要件
+      description: 満たすべき条件
+      placeholder: |
+        - [ ] 要件1
+        - [ ] 要件2
+        - [ ] 要件3
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: 完了条件
+      description: 何をもって完了とするか
+      placeholder: |
+        - [ ] 実装完了
+        - [ ] pytest 実行
+        - [ ] 変更ファイル一覧を記録
+        - [ ] 影響範囲を記録
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: 制約
+      description: 壊してはいけないもの、守るべき条件
+      placeholder: |
+        - API互換維持
+        - UI変更なし
+        - DB破壊的変更なし
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: 実装メモ
+      description: 仮説、懸念、関連Issue/PRなど
+      placeholder: 任意
+    validations:
+      required: false
