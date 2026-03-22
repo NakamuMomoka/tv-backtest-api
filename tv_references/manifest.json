@@ -1,0 +1,56 @@
+[
+    {
+      "key": "rjv_btcusdtp_1h_20230101_20260301_ref_v1",
+      "name": "RJV BTCUSDT.P 1h TV Reference",
+      "strategy_key": "rjv_builtin_v1",
+      "dataset_key": "1_BITGET_BTCUSDT.P_60",
+      "start_date": "2023-01-01",
+      "end_date": "2026-03-01",
+      "params": {
+        "COG_PERIOD": 28,
+        "COG_LENGTH": 21,
+        "COG_DEV": 1.3,
+        "VCOG_PERIOD": 13,
+        "VCOG_LENGTH": 6,
+        "VCOG_DEV": 0.8,
+        "DOTEN": true
+      },
+      "summary": {
+        "net_profit": 7965.5,
+        "max_drawdown": 75768.0,
+        "total_trades": 1440,
+        "win_rate": 41.74,
+        "profit_factor": 1.008
+      },
+      "trades_csv": "builtins/rjv_btcusdtp_1h_20230101_20260301_trades.csv",
+      "notes": "TradingView strategy tester reference"
+    },
+    {
+      "key": "assistpass_btcusdtp_1h_20230101_20260301_ref_v1",
+      "name": "AssistPass BTCUSDT.P 1h TV Reference",
+      "strategy_key": "assistpass_builtin_v1",
+      "dataset_key": "1_BITGET_BTCUSDT.P_60",
+      "start_date": "2023-01-01",
+      "end_date": "2026-03-01",
+      "params": {
+        "lengthStoch": 28,
+        "lengthRSI": 12,
+        "smoothK": 20,
+        "smoothD": 10,
+        "WillyupLine": 80,
+        "WillylowLine": 20,
+        "length": 9,
+        "lenATR": 5,
+        "lenvoly": 45.0
+      },
+      "summary": {
+        "net_profit": -68902.5,
+        "max_drawdown": 85186.5,
+        "total_trades": 845,
+        "win_rate": 42.72,
+        "profit_factor": 0.783
+      },
+      "trades_csv": "builtins/assistpass_btcusdtp_1h_20230101_20260301_trades.csv",
+      "notes": "TradingView strategy tester reference"
+    }
+  ]

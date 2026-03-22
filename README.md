@@ -28,6 +28,7 @@ pytest
 >
 > 開発中は SQLite ファイルに対して手動でスキーマを変更しています（Alembic などのマイグレーションツールは未導入）。
 > 新しいカラム（例: `optimization_runs.objective_metric`）を追加した場合、既存の `tv-backtest-api.db` には自動反映されません。
+> 起動時に `ensure_optimization_run_batch_columns` が SQLite の `optimization_runs` にセット分割用カラム（`trials_per_set` 等）を追補します。
 > 不整合を避けるため、**既存 DB を削除してから `uvicorn app.main:app --reload` で再起動し、テーブルを再作成**してください。
 
 > **既存の Optimization 結果と profit_factor について**

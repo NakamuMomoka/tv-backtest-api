@@ -16,7 +16,7 @@ from app.services import optimization_service
 router = APIRouter(prefix="/optimizations", tags=["optimizations"])
 
 
-def _validate_search_space(search_space: dict[str, Any]) -> dict[str, list[Any]]:
+def _validate_search_space(search_space: dict[str, Any]) -> tuple[dict[str, list[Any]], int]:
     if not isinstance(search_space, dict):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -48,17 +48,7 @@ def _validate_search_space(search_space: dict[str, Any]) -> dict[str, list[Any]]
         normalized[key] = value
         total_combinations *= len(value)
 
-        if total_combinations > OPT_SEARCH_SPACE_HARD_LIMIT:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Total number of parameter combinations in search_space "
-                    f"({total_combinations}) exceeds the hard maximum of "
-                    f"{OPT_SEARCH_SPACE_HARD_LIMIT}."
-                ),
-            )
-
-    return normalized
+    return normalized, total_combinations
 
 
 @router.post(
@@ -73,19 +63,62 @@ def create_optimization(
 ) -> OptimizationRunRead:
     # search_mode validation
     mode = (payload.search_mode or "grid").lower()
-    if mode not in ("grid", "random"):
+    if mode not in ("grid", "random", "guided_random"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="search_mode must be 'grid' or 'random'.",
+            detail="search_mode must be 'grid', 'random', or 'guided_random'.",
         )
-    if mode == "random":
+    if (payload.trials_per_set is not None) ^ (payload.set_count is not None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="trials_per_set and set_count must be specified together.",
+        )
+
+    has_batch = (
+        payload.trials_per_set is not None
+        and payload.set_count is not None
+    )
+    if has_batch:
+        if mode == "grid":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="trials_per_set / set_count are only valid for search_mode 'random' or 'guided_random'.",
+            )
+        if int(payload.trials_per_set or 0) <= 0 or int(payload.set_count or 0) <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="trials_per_set and set_count must be positive integers.",
+            )
+        if int(payload.trials_per_set or 0) * int(payload.set_count or 0) <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="total planned trials (trials_per_set * set_count) must be positive.",
+            )
+    elif mode in ("random", "guided_random"):
         if payload.n_trials is None or payload.n_trials <= 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="n_trials must be positive when search_mode='random'.",
+                detail="n_trials must be positive when search_mode is 'random' or 'guided_random' "
+                "(unless using trials_per_set + set_count).",
             )
 
-    validated_search_space = _validate_search_space(payload.search_space)
+    if mode == "grid" and has_batch:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="trials_per_set / set_count cannot be used with grid search.",
+        )
+
+    validated_search_space, total_combinations = _validate_search_space(payload.search_space)
+    # grid は全探索なので上限を厳密に適用する
+    if mode == "grid" and total_combinations > OPT_SEARCH_SPACE_HARD_LIMIT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Total number of parameter combinations in search_space "
+                f"({total_combinations}) exceeds the hard maximum of "
+                f"{OPT_SEARCH_SPACE_HARD_LIMIT} for grid search."
+            ),
+        )
 
     run = optimization_service.enqueue_optimization_run(
         db,
@@ -98,6 +131,8 @@ def create_optimization(
         n_trials=payload.n_trials,
         start_date=payload.start_date,
         end_date=payload.end_date,
+        trials_per_set=payload.trials_per_set if has_batch else None,
+        set_count=payload.set_count if has_batch else None,
     )
 
     # Enqueue background job to execute the optimization.
@@ -122,7 +157,7 @@ def list_optimizations(
     ),
     search_mode: Optional[str] = Query(
         default=None,
-        description="Filter by search_mode (grid/random)",
+        description="Filter by search_mode (grid/random/guided_random)",
     ),
     limit: int = Query(
         default=50,
@@ -164,17 +199,24 @@ def get_optimization_result(
     db: Session = Depends(get_db),
 ) -> OptimizationResultRead:
     run = optimization_service.get_optimization_run(db, run_id=optimization_run_id)
-    # Only allow result retrieval once the optimization has finished successfully.
-    if run.status in ("pending", "running"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Optimization has not finished yet.",
-        )
     if run.status == "failed":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=run.error_message or "Optimization failed.",
         )
+
+    # running / pending: 途中保存された result JSON があれば返す（セット分割ジョブ）
+    if run.status in ("pending", "running"):
+        try:
+            result_dict = optimization_service.get_optimization_result(run)
+            return OptimizationResultRead(**result_dict)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_404_NOT_FOUND:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Optimization has not finished yet (no result file yet).",
+                ) from exc
+            raise
 
     result_dict = optimization_service.get_optimization_result(run)
     return OptimizationResultRead(**result_dict)

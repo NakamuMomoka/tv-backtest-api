@@ -1,6 +1,13 @@
 import pandas as pd
 import numpy as np
 
+from app.services.strategy_fees import (
+    apply_fee_to_return_pct,
+    fee_metrics_meta,
+    fee_rate_from_settings,
+    per_side_return_fee,
+)
+
 
 DEFAULT_PARAMS = {
     "COG_PERIOD": 28,
@@ -131,6 +138,9 @@ def _normalize_bar_columns(bars: pd.DataFrame) -> pd.DataFrame:
 def backtest(bars: pd.DataFrame, params, settings):
     params = params or {}
     settings = settings or {}
+    optimization_mode = bool(settings.get("optimization_mode"))
+    collect_trades_for_validation = bool(settings.get("collect_trades_for_validation"))
+    collect_detail_outputs = (not optimization_mode) or collect_trades_for_validation
 
     bars = _normalize_bar_columns(bars)
 
@@ -149,14 +159,21 @@ def backtest(bars: pd.DataFrame, params, settings):
 
     DOTEN = bool(params.get("DOTEN", DEFAULT_PARAMS["DOTEN"]))
     initial_capital = float(settings.get("initial_capital", 10000))
+    fee_rate = fee_rate_from_settings(settings)
 
-    df = bars.copy().reset_index(drop=True)
+    # optimization_mode=True では trial 間で DataFrame を再利用する（copy/reset_index を削減）
+    df = bars if optimization_mode else bars.copy().reset_index(drop=True)
 
     for col in ["open", "high", "low", "close", "volume"]:
         col_value = df[col]
         if isinstance(col_value, pd.DataFrame):
+            # まれに MultiIndex 等で DataFrame が混入するケースに対応
             col_value = col_value.iloc[:, 0]
-        df[col] = pd.to_numeric(col_value, errors="coerce")
+            df[col] = pd.to_numeric(col_value, errors="coerce")
+        else:
+            # optimization_mode では dtype が既に数値なら to_numeric をスキップする
+            if (not optimization_mode) or (not pd.api.types.is_numeric_dtype(col_value)):
+                df[col] = pd.to_numeric(col_value, errors="coerce")
 
     df["hlc3"] = (df["high"] + df["low"] + df["close"]) / 3
 
@@ -177,6 +194,7 @@ def backtest(bars: pd.DataFrame, params, settings):
     active_trade: dict | None = None
 
     trades: list[dict[str, float | int | str | None]] = []
+    realized_pnls: list[float] = []  # optimization_mode=True でも metrics 用に必ず保持
     equity_curve: list[dict[str, float | int]] = []
     debug_rows: list[dict[str, object]] = []
 
@@ -231,9 +249,10 @@ def backtest(bars: pd.DataFrame, params, settings):
         side = str(active["side"])
 
         if side == "long":
-            pnl = (exit_price - entry_price) / entry_price
+            gross = (exit_price - entry_price) / entry_price
         else:
-            pnl = (entry_price - exit_price) / entry_price
+            gross = (entry_price - exit_price) / entry_price
+        pnl = apply_fee_to_return_pct(float(gross), fee_rate)
 
         return {
             "side": side,
@@ -345,51 +364,62 @@ def backtest(bars: pd.DataFrame, params, settings):
 
         ts_value = bar_time_to_str(row[time_col]) if time_col is not None else None
 
-        debug_rows.append(
-            {
-                "index": int(i),
-                "time": ts_value,
-                "cog_price_value": float(row["hlc3"]) if not pd.isna(row["hlc3"]) else None,
-                "cog": float(row["cog"]) if not pd.isna(row["cog"]) else None,
-                "change": float(change) if not pd.isna(change) else None,
-                "sd": float(sd) if not pd.isna(sd) else None,
-                "vcog": float(row["vcog"]) if not pd.isna(row["vcog"]) else None,
-                "vchange": float(vchange) if not pd.isna(vchange) else None,
-                "vsd": float(vsd) if not pd.isna(vsd) else None,
-                "abs_change": float(abs_change) if not pd.isna(abs_change) else None,
-                "sd_threshold": float(sd_threshold) if not pd.isna(sd_threshold) else None,
-                "abs_vchange": float(abs_vchange) if not pd.isna(abs_vchange) else None,
-                "vsd_threshold": float(vsd_threshold) if not pd.isna(vsd_threshold) else None,
-                "go_condition_price": bool(go_condition_price),
-                "go_condition_volume": bool(go_condition_volume),
-                "long_go": bool(long_go),
-                "short_go": bool(short_go),
-                "long_stop": bool(long_stop),
-                "short_stop": bool(short_stop),
-                "prev_state": int(prev),
-                "next_state": int(state),
-                "long_entry": bool(long_entry),
-                "short_entry": bool(short_entry),
-                "doten_long": bool(doten_long),
-                "doten_short": bool(doten_short),
-                "long_close": bool(long_close),
-                "short_close": bool(short_close),
-            }
-        )
+        if collect_detail_outputs:
+            debug_rows.append(
+                {
+                    "index": int(i),
+                    "time": ts_value,
+                    "cog_price_value": float(row["hlc3"]) if not pd.isna(row["hlc3"]) else None,
+                    "cog": float(row["cog"]) if not pd.isna(row["cog"]) else None,
+                    "change": float(change) if not pd.isna(change) else None,
+                    "sd": float(sd) if not pd.isna(sd) else None,
+                    "vcog": float(row["vcog"]) if not pd.isna(row["vcog"]) else None,
+                    "vchange": float(vchange) if not pd.isna(vchange) else None,
+                    "vsd": float(vsd) if not pd.isna(vsd) else None,
+                    "abs_change": float(abs_change) if not pd.isna(abs_change) else None,
+                    "sd_threshold": float(sd_threshold) if not pd.isna(sd_threshold) else None,
+                    "abs_vchange": float(abs_vchange) if not pd.isna(abs_vchange) else None,
+                    "vsd_threshold": float(vsd_threshold) if not pd.isna(vsd_threshold) else None,
+                    "go_condition_price": bool(go_condition_price),
+                    "go_condition_volume": bool(go_condition_volume),
+                    "long_go": bool(long_go),
+                    "short_go": bool(short_go),
+                    "long_stop": bool(long_stop),
+                    "short_stop": bool(short_stop),
+                    "prev_state": int(prev),
+                    "next_state": int(state),
+                    "long_entry": bool(long_entry),
+                    "short_entry": bool(short_entry),
+                    "doten_long": bool(doten_long),
+                    "doten_short": bool(doten_short),
+                    "long_close": bool(long_close),
+                    "short_close": bool(short_close),
+                }
+            )
 
         # ---- TV 風に「ポジション区間」を trades にする ----
         if position == 1:
             if doten_short:
                 if active_trade is not None:
-                    closed = finalize_active_trade(
-                        active_trade,
-                        exit_price=fill_price,
-                        exit_index=fill_index,
-                        exit_time=fill_time,
-                        exit_signal_type="doten_short",
+                    side = str(active_trade["side"])
+                    entry_price = float(active_trade["entry_price"])
+                    gross = (
+                        (fill_price - entry_price) / entry_price
+                        if side == "long"
+                        else (entry_price - fill_price) / entry_price
                     )
-                    trades.append(closed)
-                    equity *= 1.0 + float(closed["pnl"])
+                    pnl = apply_fee_to_return_pct(float(gross), fee_rate)
+                    realized_pnls.append(float(pnl))
+                    equity *= 1.0 + float(pnl)
+                    if collect_detail_outputs:
+                        closed = finalize_active_trade(
+                            active_trade,
+                            exit_price=fill_price,
+                            exit_index=fill_index,
+                            exit_time=fill_time,
+                            exit_signal_type="doten_short",
+                        )
+                        trades.append(closed)
 
                 active_trade = open_new_trade(
                     side="short",
@@ -402,15 +432,25 @@ def backtest(bars: pd.DataFrame, params, settings):
 
             elif long_close:
                 if active_trade is not None:
-                    closed = finalize_active_trade(
-                        active_trade,
-                        exit_price=fill_price,
-                        exit_index=fill_index,
-                        exit_time=fill_time,
-                        exit_signal_type="long_close",
+                    side = str(active_trade["side"])
+                    entry_price = float(active_trade["entry_price"])
+                    gross = (
+                        (fill_price - entry_price) / entry_price
+                        if side == "long"
+                        else (entry_price - fill_price) / entry_price
                     )
-                    trades.append(closed)
-                    equity *= 1.0 + float(closed["pnl"])
+                    pnl = apply_fee_to_return_pct(float(gross), fee_rate)
+                    realized_pnls.append(float(pnl))
+                    equity *= 1.0 + float(pnl)
+                    if collect_detail_outputs:
+                        closed = finalize_active_trade(
+                            active_trade,
+                            exit_price=fill_price,
+                            exit_index=fill_index,
+                            exit_time=fill_time,
+                            exit_signal_type="long_close",
+                        )
+                        trades.append(closed)
 
                 active_trade = None
                 position = 0
@@ -418,15 +458,25 @@ def backtest(bars: pd.DataFrame, params, settings):
         elif position == -1:
             if doten_long:
                 if active_trade is not None:
-                    closed = finalize_active_trade(
-                        active_trade,
-                        exit_price=fill_price,
-                        exit_index=fill_index,
-                        exit_time=fill_time,
-                        exit_signal_type="doten_long",
+                    side = str(active_trade["side"])
+                    entry_price = float(active_trade["entry_price"])
+                    gross = (
+                        (fill_price - entry_price) / entry_price
+                        if side == "long"
+                        else (entry_price - fill_price) / entry_price
                     )
-                    trades.append(closed)
-                    equity *= 1.0 + float(closed["pnl"])
+                    pnl = apply_fee_to_return_pct(float(gross), fee_rate)
+                    realized_pnls.append(float(pnl))
+                    equity *= 1.0 + float(pnl)
+                    if collect_detail_outputs:
+                        closed = finalize_active_trade(
+                            active_trade,
+                            exit_price=fill_price,
+                            exit_index=fill_index,
+                            exit_time=fill_time,
+                            exit_signal_type="doten_long",
+                        )
+                        trades.append(closed)
 
                 active_trade = open_new_trade(
                     side="long",
@@ -439,15 +489,25 @@ def backtest(bars: pd.DataFrame, params, settings):
 
             elif short_close:
                 if active_trade is not None:
-                    closed = finalize_active_trade(
-                        active_trade,
-                        exit_price=fill_price,
-                        exit_index=fill_index,
-                        exit_time=fill_time,
-                        exit_signal_type="short_close",
+                    side = str(active_trade["side"])
+                    entry_price = float(active_trade["entry_price"])
+                    gross = (
+                        (fill_price - entry_price) / entry_price
+                        if side == "long"
+                        else (entry_price - fill_price) / entry_price
                     )
-                    trades.append(closed)
-                    equity *= 1.0 + float(closed["pnl"])
+                    pnl = apply_fee_to_return_pct(float(gross), fee_rate)
+                    realized_pnls.append(float(pnl))
+                    equity *= 1.0 + float(pnl)
+                    if collect_detail_outputs:
+                        closed = finalize_active_trade(
+                            active_trade,
+                            exit_price=fill_price,
+                            exit_index=fill_index,
+                            exit_time=fill_time,
+                            exit_signal_type="short_close",
+                        )
+                        trades.append(closed)
 
                 active_trade = None
                 position = 0
@@ -473,11 +533,12 @@ def backtest(bars: pd.DataFrame, params, settings):
                 )
                 position = -1
 
-        equity_curve.append({"index": int(i), "equity": float(equity)})
+        if collect_detail_outputs:
+            equity_curve.append({"index": int(i), "equity": float(equity)})
 
     # 未決済ポジションを TV の一覧に近い形で返す
     open_trade = None
-    if active_trade is not None:
+    if collect_detail_outputs and active_trade is not None:
         last_row = df.iloc[-1]
         mark_price = float(last_row["close"]) if not pd.isna(last_row["close"]) else float(active_trade["entry_price"])
         side = str(active_trade["side"])
@@ -487,6 +548,8 @@ def backtest(bars: pd.DataFrame, params, settings):
             open_pnl = (mark_price - entry_price) / entry_price
         else:
             open_pnl = (entry_price - mark_price) / entry_price
+        # 未決済は entry 側手数料のみ反映（exit は未確定）
+        open_pnl -= per_side_return_fee(fee_rate)
 
         open_trade = {
             "side": side,
@@ -499,8 +562,7 @@ def backtest(bars: pd.DataFrame, params, settings):
             "status": "open",
         }
 
-    # realize-based metrics
-    realized_pnls = [float(t.get("pnl", 0.0)) for t in trades if isinstance(t, dict)]
+    # realize-based metrics（trades dict を作らなくても realized_pnls で計算）
     wins = [x for x in realized_pnls if x > 0]
     losses = [x for x in realized_pnls if x <= 0]
 
@@ -534,6 +596,7 @@ def backtest(bars: pd.DataFrame, params, settings):
         "doten_short_count": int(doten_short_count),
         "long_close_count": int(long_close_count),
         "short_close_count": int(short_close_count),
+        **fee_metrics_meta(fee_rate, implementation="return_compound_roundtrip"),
     }
 
     try:

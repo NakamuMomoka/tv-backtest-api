@@ -30,5 +30,25 @@
       "lenATR": 5,
       "lenvoly": 45.0
     }
+  },
+  {
+    "key": "motu_chaos_mod_bf_builtin_v1",
+    "name": "MotuChaosMod bF Bitget (Builtin)",
+    "description": "2本のモメンタム移動平均のクロスで売買方向を判定し、Hull MA 同士のクロスをストップ条件として使うトレンドフォロー戦略。モメンタム上抜けでロング、下抜けでショートに入り、反対シグナルではドテン、Hull の反対クロスで手仕舞う。",
+    "file": "builtins/motu_chaos_mod_bf_bitget.py",
+    "default_params": {
+      "mom1Period": 19,
+      "mom1MaPeriod": 6,
+      "mom1MaMethod": 0,
+      "mom2Period": 13,
+      "mom2MaPeriod": 26,
+      "mom2MaMethod": 0,
+      "momSrcCol": "high",
+      "hull1Period": 123,
+      "hull2Period": 12,
+      "hullSrcCol": "high",
+      "baseQty": 1.0,
+      "use_test_period": false
+    }
   }
 ]

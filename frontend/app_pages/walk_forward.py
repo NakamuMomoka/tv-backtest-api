@@ -11,6 +11,9 @@ from app_utils.api import fetch_json, load_datasets, load_strategies
 
 def render() -> None:
     st.title("Walk Forward 検証")
+    st.caption(
+        "この画面では Walk Forward 検証を行います。train/test 区間で将来データ混入がないかを確認する用途です。"
+    )
 
     datasets = load_datasets()
     strategies = load_strategies()
@@ -18,7 +21,8 @@ def render() -> None:
     wf_strategy_options = {f'{s["id"]}: {s["name"]}': s["id"] for s in strategies}
 
     # 実行フォーム
-    st.markdown("#### Walk Forward 実行")
+    st.markdown("### 1) 実行")
+    st.caption("まず train_bars / test_bars を決め、次に search_space を設定して実行します。")
     wf_selected_dataset = st.selectbox(
         "データ（Walk Forward 用）",
         options=list(wf_dataset_options.keys()),
@@ -42,6 +46,15 @@ def render() -> None:
         height=80,
         key="wf_settings",
     )
+    wf_fee_percent = st.number_input(
+        "手数料 (% / side, Walk Forward)",
+        min_value=0.0,
+        value=0.06,
+        step=0.01,
+        format="%.4f",
+        key="wf_fee_percent",
+    )
+    st.caption(f"内部 fee_rate: {float(wf_fee_percent) / 100.0:.6f}（entry/exit 両側に適用）")
     wf_objective_metric = st.text_input(
         "最適化指標 (Walk Forward)",
         value="net_profit",
@@ -75,7 +88,7 @@ def render() -> None:
     with col_wf4:
         wf_min_trades = st.number_input("min_trades (任意)", min_value=0, value=0, step=1, key="wf_min_trades")
 
-    if st.button("Walk Forward 検証を実行"):
+    if st.button("Walk Forward を実行"):
         if not wf_selected_dataset or not wf_selected_strategy:
             st.error("データとストラテジーを選択してください。")
         else:
@@ -89,6 +102,8 @@ def render() -> None:
             except json.JSONDecodeError as exc:
                 st.error(f"Walk Forward の search_space/settings の JSON が不正です: {exc}")
             else:
+                wf_settings = dict(wf_settings or {})
+                wf_settings["fee_rate"] = float(wf_fee_percent) / 100.0
                 payload = {
                     "dataset_id": wf_dataset_options[wf_selected_dataset],
                     "strategy_id": wf_strategy_options[wf_selected_strategy],
@@ -111,25 +126,10 @@ def render() -> None:
                 if status == 200 and isinstance(data, dict):
                     st.session_state.last_wf_id = data.get("id")
 
-    # 直近結果
-    st.markdown("#### 直近の Walk Forward 結果")
-    last_wf_id = st.session_state.get("last_wf_id")
-    if last_wf_id:
-        if st.button("Load Last Walk Forward Result"):
-            run_status, run_data = fetch_json("GET", f"/walk-forward/{last_wf_id}")
-            res_status, res_data = fetch_json("GET", f"/walk-forward/{last_wf_id}/result")
-            st.write("Status:", res_status)
-            if res_status == 200 and isinstance(res_data, dict):
-                _render_wf_result(res_data, run_status, run_data)
-            else:
-                if isinstance(res_data, (dict, list)):
-                    st.json(res_data)
-                else:
-                    st.write(res_data)
-
-    # 履歴
-    st.markdown("#### Walk Forward 履歴")
-    if st.button("Reload Walk Forward Runs"):
+    # 履歴一覧（選択して再表示）
+    st.markdown("### 2) 実行履歴一覧")
+    st.caption("重要列を一覧で確認し、対象行を選んで詳細を表示します。")
+    if st.button("履歴一覧を更新"):
         status, data = fetch_json("GET", "/walk-forward")
         if status == 200 and isinstance(data, list):
             st.session_state.wf_runs = data
@@ -164,42 +164,44 @@ def render() -> None:
                 axis=1,
             )
 
-        st.write("フィルター（Walk Forward）")
+        st.markdown("#### フィルター")
         col_wf_f1, col_wf_f2, col_wf_f3 = st.columns(3)
         with col_wf_f1:
-            wf_status_filter = st.multiselect(
+            wf_status_values = sorted(df_wf["status"].dropna().unique())
+            wf_status_filter = st.selectbox(
                 "ステータス",
-                options=sorted(df_wf["status"].dropna().unique()),
-                default=list(sorted(df_wf["status"].dropna().unique())),
+                options=["all"] + wf_status_values,
                 key="wf_status_filter",
             )
         with col_wf_f2:
-            wf_dataset_filter = st.multiselect(
+            wf_dataset_values = sorted(df_wf["dataset_id"].dropna().unique())
+            wf_dataset_filter = st.selectbox(
                 "データセットID",
-                options=sorted(df_wf["dataset_id"].dropna().unique()),
-                default=list(sorted(df_wf["dataset_id"].dropna().unique())),
+                options=["all"] + wf_dataset_values,
                 key="wf_dataset_filter",
             )
         with col_wf_f3:
-            wf_strategy_filter = st.multiselect(
+            wf_strategy_values = sorted(df_wf["strategy_id"].dropna().unique())
+            wf_strategy_filter = st.selectbox(
                 "ストラテジーID",
-                options=sorted(df_wf["strategy_id"].dropna().unique()),
-                default=list(sorted(df_wf["strategy_id"].dropna().unique())),
+                options=["all"] + wf_strategy_values,
                 key="wf_strategy_filter",
             )
 
-        wf_mask = (
-            df_wf["status"].isin(wf_status_filter)
-            & df_wf["dataset_id"].isin(wf_dataset_filter)
-            & df_wf["strategy_id"].isin(wf_strategy_filter)
-        )
+        wf_mask = pd.Series(True, index=df_wf.index)
+        if wf_status_filter != "all":
+            wf_mask &= df_wf["status"] == wf_status_filter
+        if wf_dataset_filter != "all":
+            wf_mask &= df_wf["dataset_id"] == wf_dataset_filter
+        if wf_strategy_filter != "all":
+            wf_mask &= df_wf["strategy_id"] == wf_strategy_filter
         df_wf_view = df_wf[wf_mask]
 
         wf_columns = [
             "id",
+            "status",
             "dataset_id",
             "strategy_id",
-            "status",
             "train_bars",
             "test_bars",
             "step_bars",
@@ -210,23 +212,30 @@ def render() -> None:
             "finished_at",
         ]
         existing_cols = [c for c in wf_columns if c in df_wf_view.columns]
+        st.caption(f"表示件数: {len(df_wf_view)} 件")
         st.dataframe(df_wf_view[existing_cols], use_container_width=True)
 
         wf_options = {
-            f'{row["id"]}: status={row["status"]}': row["id"]
+            f'#{row["id"]} | {row["status"]} | ds={row["dataset_id"]} st={row["strategy_id"]}': row["id"]
             for _, row in df_wf_view.iterrows()
         }
-        selected_wf_run = st.selectbox(
-            "Walk Forward 実行を選択",
-            options=list(wf_options.keys()),
-            key="wf_history_select",
-        )
-        if st.button("Load Selected Walk Forward Result"):
-            run_id = wf_options[selected_wf_run]
-            run_status_sel, run_data_sel = fetch_json("GET", f"/walk-forward/{run_id}")
-            _, res_data_sel = fetch_json("GET", f"/walk-forward/{run_id}/result")
-            if isinstance(res_data_sel, dict):
-                _render_wf_result(res_data_sel, run_status_sel, run_data_sel)
+        if wf_options:
+            selected_wf_run = st.selectbox(
+                "表示する実行を選択",
+                options=list(wf_options.keys()),
+                key="wf_history_select",
+            )
+            if st.button("詳細を表示"):
+                run_id = wf_options[selected_wf_run]
+                run_status_sel, run_data_sel = fetch_json("GET", f"/walk-forward/{run_id}")
+                _, res_data_sel = fetch_json("GET", f"/walk-forward/{run_id}/result")
+                if isinstance(res_data_sel, dict):
+                    st.markdown("---")
+                    _render_wf_result(res_data_sel, run_status_sel, run_data_sel)
+        else:
+            st.info("条件に一致する履歴がありません。")
+    else:
+        st.info("まだ実行履歴がありません。まず上の「1) 実行」から作成してください。")
 
 
 def _render_wf_result(res_data: dict[str, Any], run_status: int, run_data: Any) -> None:

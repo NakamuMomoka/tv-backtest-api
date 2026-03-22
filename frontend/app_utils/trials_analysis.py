@@ -143,7 +143,7 @@ def render_trials_ranking(
         min_trades = st.number_input(
             "最低トレード回数 (min_trades)",
             min_value=0,
-            value=30,
+            value=500,
             step=1,
             key=f"{key_prefix}_min_trades",
         )

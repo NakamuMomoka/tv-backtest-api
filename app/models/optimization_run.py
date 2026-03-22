@@ -35,4 +35,11 @@ class OptimizationRun(Base):
     message = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
+    # random / guided_random のセット分割実行（いずれも None なら従来の単発 n_trials）
+    trials_per_set = Column(Integer, nullable=True)
+    set_count = Column(Integer, nullable=True)
+    total_planned_trials = Column(Integer, nullable=True)
+    completed_sets = Column(Integer, nullable=True)
+    current_set_index = Column(Integer, nullable=True)
+    last_progress_at = Column(DateTime, nullable=True)
 

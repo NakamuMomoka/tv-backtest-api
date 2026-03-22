@@ -6,6 +6,15 @@ from app.models.strategy import Strategy  # noqa: F401
 from app.models.backtest_run import BacktestRun  # noqa: F401
 from app.models.optimization_run import OptimizationRun  # noqa: F401
 from app.models.walk_forward_run import WalkForwardRun  # noqa: F401
+from app.models.tv_reference_run import TvReferenceRun  # noqa: F401
 
-__all__ = ["Base", "Dataset", "Strategy", "BacktestRun", "OptimizationRun", "WalkForwardRun"]
+__all__ = [
+    "Base",
+    "Dataset",
+    "Strategy",
+    "BacktestRun",
+    "OptimizationRun",
+    "WalkForwardRun",
+    "TvReferenceRun",
+]
 

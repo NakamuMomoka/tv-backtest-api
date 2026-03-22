@@ -9,9 +9,10 @@ from app_utils.api import fetch, fetch_json, load_strategies
 
 def render() -> None:
     st.title("ストラテジー")
+    st.caption("この画面ではストラテジーを管理します。Builtin同期またはPythonアップロードで登録できます。")
 
     # 一覧
-    st.subheader("ストラテジー一覧")
+    st.subheader("1) 一覧")
     strategies = load_strategies()
     if strategies:
         # 罫線付きに見えるよう、コンテナ+区切り線で描画
@@ -53,14 +54,14 @@ def render() -> None:
 
     col_reload, col_sync = st.columns(2)
     with col_reload:
-        if st.button("Reload Strategies"):
+        if st.button("一覧を更新"):
             status, data = fetch_json("GET", "/strategies")
             if status == 200 and isinstance(data, list):
                 st.session_state.strategies = data
             else:
                 st.warning(f"Failed to load strategies: {data}")
     with col_sync:
-        st.markdown("##### Builtin ストラテジー同期")
+        st.markdown("##### Builtin ストラテジー")
         if st.button("Builtin を同期"):
             status, data = fetch_json("POST", "/strategies/builtins/sync")
             st.write("Status:", status)
@@ -71,7 +72,8 @@ def render() -> None:
             st.session_state.pop("strategies", None)
 
     # アップロード
-    st.markdown("##### ストラテジーアップロード (Python)")
+    st.markdown("### 2) Pythonアップロード")
+    st.caption("default_params_json は最適化/バックテスト画面の入力フォーム初期値に使われます。")
     st_name = st.text_input("ストラテジー名", key="upload_strategy_name")
     st_desc = st.text_area("説明", key="upload_strategy_desc")
     st_default_params = st.text_input(
@@ -84,7 +86,7 @@ def render() -> None:
         type=["py"],
         key="upload_strategy_file",
     )
-    if st.button("ストラテジー登録"):
+    if st.button("ストラテジーを登録"):
         if not st_name or not st_file:
             st.error("Strategy name and Python file are required.")
         else:

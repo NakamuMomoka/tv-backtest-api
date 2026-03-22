@@ -5,16 +5,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.services.strategy_fees import compound_equity_after_side_fee, fee_metrics_meta, fee_rate_from_settings
+
 
 DEFAULT_PARAMS: dict[str, Any] = {
-    "Startyear": 2017,
-    "Startmonth": 1,
-    "Startday": 1,
-    "Starthour": 0,
-    "Endyear": 2020,
-    "Endmonth": 1,
-    "Endday": 1,
-    "Endhour": 0,
     "lengthStoch": 28,
     "lengthRSI": 12,
     "smoothK": 20,
@@ -114,6 +108,20 @@ def _infer_mintick(close: pd.Series) -> float:
     return float(diffs.min())
 
 
+def _to_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
 def run_backtest(
     bars: pd.DataFrame,
     params: dict[str, Any] | None = None,
@@ -124,49 +132,54 @@ def run_backtest(
 
     前提:
     - open/high/low/close が必要
-    - time または timestamp があれば期間フィルタに使用
     - 売買執行はシグナルバー終値ベース
+    - 期間フィルタは strategy 内では行わず、API / service 側で bars を
+      request の start_date/end_date に絞り込んでから渡す前提
     """
 
     params = {**DEFAULT_PARAMS, **(params or {})}
     settings = settings or {}
+    optimization_mode = bool(settings.get("optimization_mode"))
+    collect_trades_for_validation = bool(settings.get("collect_trades_for_validation"))
+    collect_detail_outputs = (not optimization_mode) or collect_trades_for_validation
+    cache: dict[str, Any] | None = None
+    if optimization_mode:
+        c = settings.get("_assistpass_cache")
+        if isinstance(c, dict):
+            cache = c
 
-    df = bars.copy().reset_index(drop=True)
+    # job 内で共通の前処理済み DataFrame を再利用する
+    if cache is not None and "base_df" in cache:
+        # base_df 自体は不変前提だが、戦略内で列追加するため shallow copy
+        df = cache["base_df"].copy()
+    else:
+        df = bars.copy().reset_index(drop=True)
 
     required = {"open", "high", "low", "close"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
 
-    for col in ["open", "high", "low", "close"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    if "Volume" in df.columns:
-        df["volume"] = pd.to_numeric(df["Volume"], errors="coerce")
-    elif "volume" in df.columns:
-        df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+    # ---- base_df の生成（数値化済み OHLCV + timestamp）----
+    if cache is not None and "base_df" in cache:
+        # すでに base_df を使って df を作っているのでここでは何もしない
+        pass
     else:
-        df["volume"] = np.nan
+        for col in ["open", "high", "low", "close"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df["timestamp"] = _timestamp_series(df)
+        if "Volume" in df.columns:
+            df["volume"] = pd.to_numeric(df["Volume"], errors="coerce")
+        elif "volume" in df.columns:
+            df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+        else:
+            df["volume"] = np.nan
 
-    start_ts = pd.Timestamp(
-        year=int(params["Startyear"]),
-        month=int(params["Startmonth"]),
-        day=int(params["Startday"]),
-        hour=int(params["Starthour"]),
-        minute=0,
-        tz="UTC",
-    )
-    end_ts = pd.Timestamp(
-        year=int(params["Endyear"]),
-        month=int(params["Endmonth"]),
-        day=int(params["Endday"]),
-        hour=int(params["Endhour"]),
-        minute=0,
-        tz="UTC",
-    )
-    df["timescale"] = (df["timestamp"] > start_ts) & (df["timestamp"] < end_ts)
+        df["timestamp"] = _timestamp_series(df)
+
+        if cache is not None:
+            # job 単位でそのまま再利用するための base_df を保存
+            cache["base_df"] = df.copy()
 
     length_rsi = int(params["lengthRSI"])
     length_stoch = int(params["lengthStoch"])
@@ -185,22 +198,40 @@ def run_backtest(
     mintick = float(mintick)
     pip = mintick * point if mintick > 0 else 1.0
 
-    # RSI
-    rsi1 = _rsi(df["close"], length_rsi)
+    # ---- RSI / Stoch / ATR / Williams をキャッシュ ----
+    close_series = df["close"]
+    cache_key_rsi = f"rsi_len_{length_rsi}"
+    if cache is not None and cache_key_rsi in cache:
+        rsi1 = cache[cache_key_rsi]
+    else:
+        rsi1 = _rsi(close_series, length_rsi)
+        if cache is not None:
+            cache[cache_key_rsi] = rsi1
 
-    # Williams %R を Pine 式そのままで変換
-    willy_upper = df["high"].rolling(willy_length, min_periods=willy_length).max()
-    willy_lower = df["low"].rolling(willy_length, min_periods=willy_length).min()
-    willy_span = (willy_upper - willy_lower).replace(0.0, np.nan)
-    willy = 100.0 * (df["close"] - willy_upper) / willy_span + 100.0
+    # Williams %R (willy) と ATR を fixed-part としてキャッシュ
+    cache_key_willy = f"willy_len_{willy_length}"
+    if cache is not None and cache_key_willy in cache:
+        willy = cache[cache_key_willy]
+    else:
+        willy_upper = df["high"].rolling(willy_length, min_periods=willy_length).max()
+        willy_lower = df["low"].rolling(willy_length, min_periods=willy_length).min()
+        willy_span = (willy_upper - willy_lower).replace(0.0, np.nan)
+        willy = 100.0 * (close_series - willy_upper) / willy_span + 100.0
+        if cache is not None:
+            cache[cache_key_willy] = willy
 
     # Stoch RSI
     k_raw = _stoch(rsi1, length_stoch)
     k = _sma(k_raw, smooth_k)
     d = _sma(k, smooth_d)
 
-    # ATR
-    atr = _atr(df, len_atr)
+    cache_key_atr = f"atr_len_{len_atr}"
+    if cache is not None and cache_key_atr in cache:
+        atr = cache[cache_key_atr]
+    else:
+        atr = _atr(df, len_atr)
+        if cache is not None:
+            cache[cache_key_atr] = atr
     atr_pips = atr / pip
 
     # Cross conditions
@@ -211,6 +242,7 @@ def run_backtest(
 
     # Backtest settings
     initial_capital = float(settings.get("initial_capital", 1_000_000.0))
+    fee_rate = fee_rate_from_settings(settings)
     equity = initial_capital
     peak_equity = equity
     max_drawdown = 0.0
@@ -222,9 +254,13 @@ def run_backtest(
     state = 0
 
     trades: list[dict[str, Any]] = []
+    realized_pnls: list[float] = []  # optimization_mode=True でも metrics 用に保持
     equity_series: list[dict[str, Any]] = []
+    debug_rows: list[dict[str, Any]] = []
 
-    if len(df) > 0:
+    allow_bar_true_count = 0
+
+    if len(df) > 0 and collect_detail_outputs:
         equity_series.append(
             {
                 "index": 0,
@@ -233,9 +269,38 @@ def run_backtest(
             }
         )
 
+        if collect_detail_outputs:
+            debug_rows.append(
+                {
+                    "index": 0,
+                    "timestamp": df["timestamp"].iloc[0].isoformat(),
+                    "close": _to_float_or_none(df["close"].iloc[0]),
+                    "timescale": True,
+                    "allow_bar": False,
+                    "willy": _to_float_or_none(willy.iloc[0]),
+                    "k": _to_float_or_none(k.iloc[0]),
+                    "d": _to_float_or_none(d.iloc[0]),
+                    "atr_pips": _to_float_or_none(atr_pips.iloc[0]),
+                    "cross_up": bool(cross_up.iloc[0]) if pd.notna(cross_up.iloc[0]) else False,
+                    "cross_dn": bool(cross_dn.iloc[0]) if pd.notna(cross_dn.iloc[0]) else False,
+                    "cross_up2": bool(cross_up2.iloc[0]) if pd.notna(cross_up2.iloc[0]) else False,
+                    "cross_dn2": bool(cross_dn2.iloc[0]) if pd.notna(cross_dn2.iloc[0]) else False,
+                    "prev_state": 0,
+                    "state": 0,
+                    "long_entry": False,
+                    "short_entry": False,
+                    "long_close": False,
+                    "short_close": False,
+                    "position_before": 0,
+                    "position_after": 0,
+                }
+            )
+
     for i in range(1, len(df)):
         prev_close = float(df["close"].iloc[i - 1])
         curr_close = float(df["close"].iloc[i])
+
+        position_before = int(position)
 
         # 保有中の損益をバーごとに反映
         if position == 1 and prev_close > 0:
@@ -247,13 +312,14 @@ def run_backtest(
         if peak_equity > 0:
             max_drawdown = max(max_drawdown, (peak_equity - equity) / peak_equity)
 
-        equity_series.append(
-            {
-                "index": int(i),
-                "timestamp": df["timestamp"].iloc[i].isoformat(),
-                "equity": float(equity),
-            }
-        )
+        if collect_detail_outputs:
+            equity_series.append(
+                {
+                    "index": int(i),
+                    "timestamp": df["timestamp"].iloc[i].isoformat(),
+                    "equity": float(equity),
+                }
+            )
 
         prev_state = state
         state = prev_state
@@ -276,78 +342,52 @@ def run_backtest(
         b_long_close = state == 0 and prev_state == 1
         b_short_close = state == 0 and prev_state == 2
 
+        # 期間フィルタは API 側で絞り込み済み前提。
+        # ここではウォームアップ条件のみを確認する。
         allow_bar = (
             i >= willy_length
-            and bool(df["timescale"].iloc[i])
             and pd.notna(df["close"].iloc[i - willy_length])
         )
+        if allow_bar:
+            allow_bar_true_count += 1
+
+        debug_row = {
+            "index": int(i),
+            "timestamp": df["timestamp"].iloc[i].isoformat(),
+            "close": _to_float_or_none(curr_close),
+            "timescale": True,
+            "allow_bar": bool(allow_bar),
+            "willy": _to_float_or_none(willy.iloc[i]),
+            "k": _to_float_or_none(k.iloc[i]),
+            "d": _to_float_or_none(d.iloc[i]),
+            "atr_pips": _to_float_or_none(atr_pips.iloc[i]),
+            "cross_up": bool(cross_up.iloc[i]) if pd.notna(cross_up.iloc[i]) else False,
+            "cross_dn": bool(cross_dn.iloc[i]) if pd.notna(cross_dn.iloc[i]) else False,
+            "cross_up2": bool(cross_up2.iloc[i]) if pd.notna(cross_up2.iloc[i]) else False,
+            "cross_dn2": bool(cross_dn2.iloc[i]) if pd.notna(cross_dn2.iloc[i]) else False,
+            "prev_state": int(prev_state),
+            "state": int(state),
+            "long_entry": bool(b_long_entry),
+            "short_entry": bool(b_short_entry),
+            "long_close": bool(b_long_close),
+            "short_close": bool(b_short_close),
+            "position_before": int(position_before),
+            "position_after": None,
+        }
+
         if not allow_bar:
+            if collect_detail_outputs:
+                debug_row["position_after"] = int(position)
+                debug_rows.append(debug_row)
             continue
 
         # close
         if b_long_close and position == 1 and entry_price is not None and entry_index is not None:
+            equity = compound_equity_after_side_fee(equity, fee_rate)
             pnl = equity - float(entry_equity)
             pnl_pct = (curr_close - float(entry_price)) / float(entry_price)
-            trades.append(
-                {
-                    "entry_index": int(entry_index),
-                    "exit_index": int(i),
-                    "side": "long",
-                    "entry_price": float(entry_price),
-                    "exit_price": float(curr_close),
-                    "pnl": float(pnl),
-                    "pnl_pct": float(pnl_pct),
-                }
-            )
-            position = 0
-            entry_price = None
-            entry_index = None
-            entry_equity = None
-
-        if b_short_close and position == -1 and entry_price is not None and entry_index is not None:
-            pnl = equity - float(entry_equity)
-            pnl_pct = (float(entry_price) - curr_close) / float(entry_price)
-            trades.append(
-                {
-                    "entry_index": int(entry_index),
-                    "exit_index": int(i),
-                    "side": "short",
-                    "entry_price": float(entry_price),
-                    "exit_price": float(curr_close),
-                    "pnl": float(pnl),
-                    "pnl_pct": float(pnl_pct),
-                }
-            )
-            position = 0
-            entry_price = None
-            entry_index = None
-            entry_equity = None
-
-        # entry
-        if b_long_entry:
-            if position == -1 and entry_price is not None and entry_index is not None:
-                pnl = equity - float(entry_equity)
-                pnl_pct = (float(entry_price) - curr_close) / float(entry_price)
-                trades.append(
-                    {
-                        "entry_index": int(entry_index),
-                        "exit_index": int(i),
-                        "side": "short",
-                        "entry_price": float(entry_price),
-                        "exit_price": float(curr_close),
-                        "pnl": float(pnl),
-                        "pnl_pct": float(pnl_pct),
-                    }
-                )
-            position = 1
-            entry_price = curr_close
-            entry_index = i
-            entry_equity = equity
-
-        if b_short_entry:
-            if position == 1 and entry_price is not None and entry_index is not None:
-                pnl = equity - float(entry_equity)
-                pnl_pct = (curr_close - float(entry_price)) / float(entry_price)
+            realized_pnls.append(float(pnl))
+            if collect_detail_outputs:
                 trades.append(
                     {
                         "entry_index": int(entry_index),
@@ -359,14 +399,88 @@ def run_backtest(
                         "pnl_pct": float(pnl_pct),
                     }
                 )
+            position = 0
+            entry_price = None
+            entry_index = None
+            entry_equity = None
+
+        if b_short_close and position == -1 and entry_price is not None and entry_index is not None:
+            equity = compound_equity_after_side_fee(equity, fee_rate)
+            pnl = equity - float(entry_equity)
+            pnl_pct = (float(entry_price) - curr_close) / float(entry_price)
+            realized_pnls.append(float(pnl))
+            if collect_detail_outputs:
+                trades.append(
+                    {
+                        "entry_index": int(entry_index),
+                        "exit_index": int(i),
+                        "side": "short",
+                        "entry_price": float(entry_price),
+                        "exit_price": float(curr_close),
+                        "pnl": float(pnl),
+                        "pnl_pct": float(pnl_pct),
+                    }
+                )
+            position = 0
+            entry_price = None
+            entry_index = None
+            entry_equity = None
+
+        # entry
+        if b_long_entry:
+            if position == -1 and entry_price is not None and entry_index is not None:
+                equity = compound_equity_after_side_fee(equity, fee_rate)
+                pnl = equity - float(entry_equity)
+                pnl_pct = (float(entry_price) - curr_close) / float(entry_price)
+                realized_pnls.append(float(pnl))
+                if collect_detail_outputs:
+                    trades.append(
+                        {
+                            "entry_index": int(entry_index),
+                            "exit_index": int(i),
+                            "side": "short",
+                            "entry_price": float(entry_price),
+                            "exit_price": float(curr_close),
+                            "pnl": float(pnl),
+                            "pnl_pct": float(pnl_pct),
+                        }
+                    )
+            position = 1
+            entry_price = curr_close
+            entry_index = i
+            equity = compound_equity_after_side_fee(equity, fee_rate)
+            entry_equity = equity
+
+        if b_short_entry:
+            if position == 1 and entry_price is not None and entry_index is not None:
+                equity = compound_equity_after_side_fee(equity, fee_rate)
+                pnl = equity - float(entry_equity)
+                pnl_pct = (curr_close - float(entry_price)) / float(entry_price)
+                realized_pnls.append(float(pnl))
+                if collect_detail_outputs:
+                    trades.append(
+                        {
+                            "entry_index": int(entry_index),
+                            "exit_index": int(i),
+                            "side": "long",
+                            "entry_price": float(entry_price),
+                            "exit_price": float(curr_close),
+                            "pnl": float(pnl),
+                            "pnl_pct": float(pnl_pct),
+                        }
+                    )
             position = -1
             entry_price = curr_close
             entry_index = i
+            equity = compound_equity_after_side_fee(equity, fee_rate)
             entry_equity = equity
+
+        if collect_detail_outputs:
+            debug_row["position_after"] = int(position)
+            debug_rows.append(debug_row)
 
     open_position_at_end = position != 0 and entry_price is not None
 
-    realized_pnls = [float(t.get("pnl", 0.0)) for t in trades]
     wins = [x for x in realized_pnls if x > 0]
     losses = [x for x in realized_pnls if x < 0]
 
@@ -390,12 +504,22 @@ def run_backtest(
         "open_position_at_end": bool(open_position_at_end),
         "atr_pips_last": float(atr_pips.dropna().iloc[-1]) if atr_pips.notna().any() else None,
         "mintick_used": float(mintick),
+        # 互換用: strategy 内 timescale は撤去済みのため全バー true 扱い
+        "timescale_true_count": int(len(df)),
+        "allow_bar_true_count": int(allow_bar_true_count),
+        "cross_up_true_count": int(cross_up.fillna(False).sum()),
+        "cross_dn_true_count": int(cross_dn.fillna(False).sum()),
+        "cross_up2_true_count": int(cross_up2.fillna(False).sum()),
+        "cross_dn2_true_count": int(cross_dn2.fillna(False).sum()),
+        "debug_rows_count": int(len(debug_rows)),
+        **fee_metrics_meta(fee_rate, implementation="equity_per_fill_side"),
     }
 
     return {
         "metrics": metrics,
         "trades": trades,
         "equity_series": equity_series,
+        "debug_rows": debug_rows,
     }
 
 

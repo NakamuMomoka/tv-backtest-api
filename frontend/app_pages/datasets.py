@@ -9,9 +9,10 @@ from app_utils.api import fetch, fetch_json, load_datasets
 
 def render() -> None:
     st.title("データセット")
+    st.caption("この画面では検証用CSVを管理します。まず一覧確認、次に必要に応じて同期/アップロードしてください。")
 
     # 一覧
-    st.subheader("データ一覧")
+    st.subheader("1) 一覧")
     datasets = load_datasets()
     if datasets:
         with st.container(border=True):
@@ -55,14 +56,14 @@ def render() -> None:
 
     col_reload, col_sync = st.columns(2)
     with col_reload:
-        if st.button("Reload Datasets"):
+        if st.button("一覧を更新"):
             status, data = fetch_json("GET", "/datasets")
             if status == 200 and isinstance(data, list):
                 st.session_state.datasets = data
             else:
                 st.warning(f"Failed to load datasets: {data}")
     with col_sync:
-        st.markdown("##### Builtin データセット同期")
+        st.markdown("##### Builtin データセット")
         if st.button("Builtin を同期"):
             status, data = fetch_json("POST", "/datasets/builtins/sync")
             st.write("Status:", status)
@@ -73,12 +74,13 @@ def render() -> None:
             st.session_state.pop("datasets", None)
 
     # アップロード
-    st.markdown("##### データをアップロード (CSV)")
+    st.markdown("### 2) CSVアップロード")
+    st.caption("登録後は一覧を自動更新します。symbol/timeframe は任意です。")
     up_name = st.text_input("データ名", key="upload_dataset_name")
     up_symbol = st.text_input("シンボル", key="upload_dataset_symbol")
     up_timeframe = st.text_input("時間足", key="upload_dataset_timeframe")
     up_file = st.file_uploader("CSVファイル", type=["csv"], key="upload_dataset_file")
-    if st.button("データセット登録"):
+    if st.button("データセットを登録"):
         if not up_name or not up_file:
             st.error("Dataset name and CSV file are required.")
         else:

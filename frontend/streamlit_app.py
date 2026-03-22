@@ -6,7 +6,16 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from app_pages import backtest, datasets, optimization_jobs, optimizations, strategies, walk_forward
+from app_pages import (
+    backtest,
+    datasets,
+    optimization_jobs,
+    optimizations,
+    strategies,
+    tv_comparison,
+    tv_references,
+    walk_forward,
+)
 from app_utils.api import init_session_state
 from app_utils.trials_analysis import (
     build_trials_dataframe,
@@ -86,6 +95,10 @@ def render_sidebar() -> None:
     st.session_state.base_url = base_url
 
     st.sidebar.markdown("---")
+    st.sidebar.markdown("### 画面カテゴリ")
+    st.sidebar.caption("**データ登録系**: データセット / ストラテジー / TV基準結果")
+    st.sidebar.caption("**分析系**: バックテスト / 最適化 / ジョブ一覧 / TV比較 / Walk Forward")
+    st.sidebar.markdown("---")
     if st.sidebar.button("リスト再読み込み"):
         st.session_state.pop("datasets", None)
         st.session_state.pop("strategies", None)
@@ -118,10 +131,20 @@ def main() -> None:
     init_session_state()
     render_sidebar()
     pages = {
-        "アプリ": [
+        "ホーム": [
             st.Page(_render_main_legacy, title="メイン", icon="🏠"),
+        ],
+        "データ登録系": [
             st.Page(datasets.render, title="データセット", icon="📂", url_path="datasets"),
             st.Page(strategies.render, title="ストラテジー", icon="🧩", url_path="strategies"),
+            st.Page(
+                tv_references.render,
+                title="TV基準結果",
+                icon="📌",
+                url_path="tv-references",
+            ),
+        ],
+        "分析系": [
             st.Page(backtest.render, title="バックテスト", icon="🧪", url_path="backtests"),
             st.Page(optimizations.render, title="最適化", icon="🧮", url_path="optimizations"),
             st.Page(
@@ -129,6 +152,12 @@ def main() -> None:
                 title="最適化ジョブ一覧",
                 icon="📋",
                 url_path="optimization-jobs",
+            ),
+            st.Page(
+                tv_comparison.render,
+                title="TV比較",
+                icon="🔎",
+                url_path="tv-comparison",
             ),
             st.Page(
                 walk_forward.render,

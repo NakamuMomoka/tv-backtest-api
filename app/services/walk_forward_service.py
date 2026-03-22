@@ -9,7 +9,7 @@ import pandas as pd
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.config import WALK_FORWARD_RESULTS_DIR
+from app.core.config import DEFAULT_FEE_RATE, WALK_FORWARD_RESULTS_DIR
 from app.models.dataset import Dataset
 from app.models.strategy import Strategy
 from app.models.walk_forward_run import WalkForwardRun
@@ -148,8 +148,11 @@ def create_walk_forward_run(
             detail="Dataset has fewer bars than train_bars + test_bars.",
         )
 
+    settings_used = dict(settings or {})
+    settings_used["fee_rate"] = float(settings_used.get("fee_rate", DEFAULT_FEE_RATE))
+
     search_space_json = json.dumps(to_jsonable(search_space or {}))
-    settings_json = json.dumps(to_jsonable(settings or {}))
+    settings_json = json.dumps(to_jsonable(settings_used))
 
     run = WalkForwardRun(
         dataset_id=dataset.id,
@@ -205,7 +208,7 @@ def create_walk_forward_run(
                     bars=train_df,
                     strategy=strategy,
                     params=params,
-                    settings=settings or {},
+                    settings=settings_used,
                 )
                 metrics = result.get("metrics") or {}
                 score = _score_from_metrics(metrics, objective_metric)
@@ -237,7 +240,7 @@ def create_walk_forward_run(
                 bars=test_df,
                 strategy=strategy,
                 params=best_params,
-                settings=settings or {},
+                settings=settings_used,
             )
             test_metrics = test_result.get("metrics") or {}
             oos_score = _compute_oos_score(test_metrics, objective_metric)
